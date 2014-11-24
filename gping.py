@@ -103,62 +103,74 @@ class GPing:
         does a lot of nothing until self.pings is empty
         """
         while len(self.pings):
-            gevent.sleep()
+            gevent.sleep(10) #gevent.sleep() will continuously take all the CPU. To cut down setting it to 10 seconds
+            
 
 
     def send(self, dest_addr, callback, psize=64):
-        """
-        Send a ICMP echo request.
-        :dest_addr - where to send it
-        :callback  - what to call when we get a response
-        :psize     - how much data to send with it
-        """
-        # make sure we dont have too many outstanding requests
-        while len(self.pings) >= self.max_outstanding:
-            gevent.sleep()
-
-        #resolve hostnames
-        dest_addr  =  socket.gethostbyname(dest_addr)
-
-        # figure out our id
-        packet_id = self.id
-
-        # increment our id, but wrap if we go over the max size for USHORT
-        self.id = (self.id + 1) % 2 ** 16
-
-
-        # make a spot for this ping in self.pings
-        self.pings[packet_id] = {'sent':False,'success':False,'error':False,'dest_addr':dest_addr,'callback':callback}
-
-        # Remove header size from packet size
-        psize = psize - 8
-
-        # Header is type (8), code (8), checksum (16), id (16), sequence (16)
-        my_checksum = 0
-
-        # Make a dummy heder with a 0 checksum.
-        header = struct.pack("bbHHh", ICMP_ECHO_REQUEST, 0, my_checksum, packet_id, 1)
-        bytes = struct.calcsize("d")
-        data = (psize - bytes) * "Q"
-        data = struct.pack("d", time.time()) + data
-
-        # Calculate the checksum on the data and the dummy header.
-        my_checksum = checksum(header + data)
-
-        # Now that we have the right checksum, we put that in. It's just easier
-        # to make up a new header than to stuff it into the dummy.
-        header = struct.pack(
-            "bbHHh", ICMP_ECHO_REQUEST, 0, socket.htons(my_checksum), packet_id, 1
-        )
-        packet = header + data
-        # note the send_time for checking for timeouts
-        self.pings[packet_id]['send_time'] = time.time()
-
-        # send the packet
-        self.socket.sendto(packet, (dest_addr, 1)) # Don't know about the 1
-
-        #mark the packet as sent
-        self.pings[packet_id]['sent'] = True
+        try:
+            """
+            Send a ICMP echo request.
+            :dest_addr - where to send it
+            :callback  - what to call when we get a response
+            :psize     - how much data to send with it
+            """
+            # make sure we dont have too many outstanding requests
+            while len(self.pings) >= self.max_outstanding:
+                gevent.sleep()
+    
+            #resolve hostnames
+            dest_addr  =  socket.gethostbyname(dest_addr)
+    
+            # figure out our id
+            packet_id = self.id
+    
+            # increment our id, but wrap if we go over the max size for USHORT
+            self.id = (self.id + 1) % 2 ** 16
+    
+    
+            # make a spot for this ping in self.pings
+            self.pings[packet_id] = {'sent':False,'success':False,'error':False,'dest_addr':dest_addr,'callback':callback}
+    
+            # Remove header size from packet size
+            psize = psize - 8
+    
+            # Header is type (8), code (8), checksum (16), id (16), sequence (16)
+            my_checksum = 0
+    
+            # Make a dummy heder with a 0 checksum.
+            header = struct.pack("bbHHh", ICMP_ECHO_REQUEST, 0, my_checksum, packet_id, 1)
+            bytes = struct.calcsize("d")
+            data = (psize - bytes) * "Q"
+            data = struct.pack("d", time.time()) + data
+    
+            # Calculate the checksum on the data and the dummy header.
+            my_checksum = checksum(header + data)
+    
+            # Now that we have the right checksum, we put that in. It's just easier
+            # to make up a new header than to stuff it into the dummy.
+            header = struct.pack(
+                "bbHHh", ICMP_ECHO_REQUEST, 0, socket.htons(my_checksum), packet_id, 1
+            )
+            packet = header + data
+            # note the send_time for checking for timeouts
+            self.pings[packet_id]['send_time'] = time.time()
+    
+            # send the packet
+            self.socket.sendto(packet, (dest_addr, 1)) # Don't know about the 1
+    
+            #mark the packet as sent
+            self.pings[packet_id]['sent'] = True
+        except:
+            print 'Failed to ping ',dest_addr
+            try:
+                if packet_id and packet_id in self.pings:
+                    ping = self.pings[packet_id]
+                    ping['error'] = True
+                    ping['callback'](ping)
+                    del(self.pings[packet_id])
+            except:
+                pass
 
 
     def __process_timeouts__(self):
@@ -166,13 +178,16 @@ class GPing:
         check to see if any of our pings have timed out 
         """
         while not self.die_event.is_set():
-            for i in self.pings:
-                if self.pings[i]['sent'] and time.time() - self.pings[i]['send_time'] > self.timeout:
-                    self.pings[i]['error'] = True
-                    self.pings[i]['callback'](self.pings[i])
-                    del(self.pings[i])
-                    break
-            gevent.sleep()
+            for k,ping in self.pings.items():
+                if ping['sent'] and time.time() - ping['send_time'] > self.timeout:
+                    ping['error'] = True
+                    ping['callback'](ping)
+                    try:
+                        del(self.pings[k])
+                    except:
+                        pass
+                    #break #we need to flush out other timeouts.
+            gevent.sleep(self.timeout/2)
 
 
     def __receive__(self):
